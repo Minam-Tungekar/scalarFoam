@@ -1,0 +1,40 @@
+#!/bin/sh
+# Builds scalarFoam and runs the scalarCavity test case (OpenFOAM v2512).
+# Note: wmake does not work in paths containing spaces.
+cd "${0%/*}" || exit
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions
+root=$PWD
+
+# 1. Build the solver
+wmake solver/scalarFoam 2>&1 | tee log.wmake
+
+# 2. Velocity field: run the stock icoFoam cavity case
+rm -rf cases/cavity
+cp -r "$FOAM_TUTORIALS"/incompressible/icoFoam/cavity/cavity cases/cavity
+(cd cases/cavity && runApplication blockMesh && runApplication icoFoam)
+latest=$(foamListTimes -case cases/cavity -latestTime)
+
+# 3. scalarCavity: frozen U and phi from icoFoam, plus a square blob of s
+cd cases/scalarCavity || exit
+rm -rf 0 [1-9]* 0.[0-9]* log.* constant
+cp -r 0.orig 0
+cp "$root/cases/cavity/$latest/U" "$root/cases/cavity/$latest/phi" 0/
+runApplication blockMesh
+runApplication setFields
+runApplication postProcess -func writeCellCentres -time 0
+cd "$root" || exit
+
+# 4. Copies of the case with upwind and linear schemes, for comparison
+for scheme in upwind linear
+do
+    rm -rf cases/scalarCavity_$scheme
+    cp -r cases/scalarCavity cases/scalarCavity_$scheme
+    foamDictionary cases/scalarCavity_$scheme/system/fvSchemes \
+        -entry 'divSchemes/div(phi,s)' -set "Gauss $scheme" > /dev/null 2>&1
+done
+
+# 5. Run scalarFoam on all three
+for case in scalarCavity scalarCavity_upwind scalarCavity_linear
+do
+    (cd cases/$case && runApplication scalarFoam)
+done
